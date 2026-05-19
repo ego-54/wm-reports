@@ -129,6 +129,19 @@ def load_sku_prices(files):
                 prices[sku] = to_float(row.get("Variant Price", ""))
     return prices
 
+def load_sku_titles(files):
+    """Return {sku: product_title} from products_export CSV/XLSX (1 or 2 files)."""
+    titles = {}
+    current_title = ""
+    for f in files:
+        for row in _iter_rows(f):
+            if row.get("Title", "").strip():
+                current_title = row["Title"].strip()
+            sku = row.get("Variant SKU", "").strip()
+            if sku and sku not in titles:
+                titles[sku] = current_title
+    return titles
+
 def load_supplier_skus(files, tag="supplier-joval"):
     """Return set of SKUs whose product has the given supplier tag (1 or 2 files)."""
     tagged = set()
@@ -176,7 +189,7 @@ def load_supplier_handles_from_csv(file):
             handles.add(h)
     return handles
 
-def load_joval_quantities_xlsx(file, sku_prices=None):
+def load_joval_quantities_xlsx(file, sku_prices=None, sku_titles=None):
     """
     Read Joval SOH xlsx — headers row 8, data from row 9:
       col A = Item No. (SKU)
@@ -218,8 +231,11 @@ def load_joval_quantities_xlsx(file, sku_prices=None):
             if final == 0:
                 tier = "Under $50" if price < 50 else ("$50–$200" if price <= 200 else "Over $200")
                 zeroed_by_rules.append({
-                    "SKU": sku, "Calculated Qty": calculated,
-                    "Price": f"${price:.2f}", "Tier": tier,
+                    "SKU": sku,
+                    "Product": sku_titles.get(sku, "") if sku_titles else "",
+                    "Calculated Qty": calculated,
+                    "Price": f"${price:.2f}",
+                    "Tier": tier,
                 })
             calculated = final
 
@@ -503,7 +519,7 @@ def build_inventory_import(inv_rows_raw, supplier_qty,
     nonzero = len(matched) - zeroed
 
     preview = [
-        {"SKU": r["SKU"], "Handle": r["Handle"],
+        {"SKU": r["SKU"], "Product": r.get("Title", ""),
          "Option": r["Option1 Value"], "On hand (new)": int(r["On hand (new)"])}
         for r in matched[:30]
     ]

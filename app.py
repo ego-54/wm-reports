@@ -172,13 +172,16 @@ with tab2:
             joval_skus = set()
 
             sku_prices = core.load_sku_prices(prod_import_files)
+            sku_titles = core.load_sku_titles(prod_import_files)
             joval_skus = core.load_supplier_skus(prod_import_files, tag="supplier-joval")
             st.info(f"Products: {len(sku_prices):,} SKU prices loaded, "
                     f"{len(joval_skus):,} supplier-joval SKUs found")
 
             joval_stats = None
             if joval_xlsx:
-                qty, joval_stats = core.load_joval_quantities_xlsx(joval_xlsx, sku_prices=sku_prices)
+                qty, joval_stats = core.load_joval_quantities_xlsx(
+                    joval_xlsx, sku_prices=sku_prices, sku_titles=sku_titles
+                )
                 all_qty.update(qty)
                 st.info(f"Joval SOH: {joval_stats['total']:,} SKUs — "
                         f"{joval_stats['nonzero']:,} with stock, "
@@ -244,15 +247,19 @@ with tab2:
                 if stats["zeroed_missing_skus"]:
                     miss = stats["zeroed_missing_skus"]
                     with st.expander(f"⚠️  Zeroed — missing from SOH — {len(miss):,} SKUs"):
-                        st.dataframe([{"SKU": s} for s in miss],
-                                     hide_index=True, use_container_width=True)
+                        st.dataframe(
+                            [{"SKU": s, "Product": sku_titles.get(s, "")} for s in miss],
+                            hide_index=True, use_container_width=True,
+                        )
 
                 # ── Zero raw stock in SOH ─────────────────────────────────────
                 if joval_stats and joval_stats["zeroed_raw"]:
                     raw = joval_stats["zeroed_raw"]
                     with st.expander(f"ℹ️  Zero stock in SOH — {len(raw):,} SKUs"):
-                        st.dataframe([{"SKU": s} for s in raw],
-                                     hide_index=True, use_container_width=True)
+                        st.dataframe(
+                            [{"SKU": s, "Product": sku_titles.get(s, "")} for s in raw],
+                            hide_index=True, use_container_width=True,
+                        )
 
                 # ── Preview table ─────────────────────────────────────────────
                 if stats.get("preview"):
