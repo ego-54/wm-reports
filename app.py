@@ -138,19 +138,12 @@ with tab2:
 
     with col1:
         st.markdown("**Shopify Exports**")
-        inv_import_files = st.file_uploader(
-            "Inventory export(s)",
-            type=["csv", "xlsx"],
-            accept_multiple_files=True,
-            key="inv_import",
-            help="Shopify Admin → Inventory → Export",
-        )
         prod_import_files = st.file_uploader(
-            "Products export(s) — required for Joval price rules",
+            "Products export(s)",
             type=["csv", "xlsx"],
             accept_multiple_files=True,
             key="prod_import",
-            help="Shopify Admin → Products → Export (can be 2 files)",
+            help="Shopify Admin → Products → Export (can be 2 files). Used for variant structure + Joval price rules.",
         )
 
     with col2:
@@ -171,19 +164,17 @@ with tab2:
     st.divider()
 
     if st.button("Generate Import CSV", type="primary", key="gen_import"):
-        if not inv_import_files:
-            st.error("Please upload at least one inventory export CSV.")
+        if not prod_import_files:
+            st.error("Please upload at least one products export CSV/XLSX.")
         else:
             all_qty    = {}
             sku_prices = {}
             joval_skus = set()
 
-            # Load prices + joval SKU set from product exports (needed for rules)
-            if prod_import_files:
-                sku_prices = core.load_sku_prices(prod_import_files)
-                joval_skus = core.load_supplier_skus(prod_import_files, tag="supplier-joval")
-                st.info(f"Products: {len(sku_prices):,} SKU prices loaded, "
-                        f"{len(joval_skus):,} supplier-joval SKUs found")
+            sku_prices = core.load_sku_prices(prod_import_files)
+            joval_skus = core.load_supplier_skus(prod_import_files, tag="supplier-joval")
+            st.info(f"Products: {len(sku_prices):,} SKU prices loaded, "
+                    f"{len(joval_skus):,} supplier-joval SKUs found")
 
             if joval_xlsx:
                 qty = core.load_joval_quantities_xlsx(joval_xlsx, sku_prices=sku_prices)
@@ -203,7 +194,7 @@ with tab2:
                 st.error("No quantities found. Upload Joval XLSX or a qty CSV.")
             else:
                 with st.spinner("Building import CSV..."):
-                    inv_rows   = core.load_flat_inventory_rows(inv_import_files)
+                    inv_rows   = core.load_flat_rows_from_products(prod_import_files)
                     csv_bytes, stats, unmatched = core.build_inventory_import(
                         inv_rows, all_qty, joval_skus=joval_skus
                     )

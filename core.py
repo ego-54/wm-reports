@@ -245,6 +245,40 @@ def load_flat_inventory_rows(files):
                 rows.append(row)
     return rows
 
+def load_flat_rows_from_products(files):
+    """
+    Return flat list of variant row dicts from products export (1 or 2 files).
+    Maps 'Variant SKU' → 'SKU' so build_inventory_import can consume them.
+    Handles continuation rows (blank Title) correctly.
+    """
+    rows = []
+    for f in files:
+        current_handle = current_title = ""
+        current_opts = {}
+        for row in _iter_rows(f):
+            h = row.get("Handle", "").strip()
+            if row.get("Title", "").strip():
+                current_handle = h
+                current_title  = row["Title"].strip()
+                current_opts   = {
+                    "Option1 Name":  row.get("Option1 Name", ""),
+                    "Option1 Value": row.get("Option1 Value", ""),
+                    "Option2 Name":  row.get("Option2 Name", ""),
+                    "Option2 Value": row.get("Option2 Value", ""),
+                    "Option3 Name":  row.get("Option3 Name", ""),
+                    "Option3 Value": row.get("Option3 Value", ""),
+                }
+            sku = row.get("Variant SKU", "").strip()
+            if not sku or not current_handle:
+                continue
+            out = {"Handle": current_handle, "Title": current_title, "SKU": sku}
+            out.update(current_opts)
+            out["Option1 Value"] = row.get("Option1 Value", current_opts.get("Option1 Value", ""))
+            out["Option2 Value"] = row.get("Option2 Value", current_opts.get("Option2 Value", ""))
+            out["Option3 Value"] = row.get("Option3 Value", current_opts.get("Option3 Value", ""))
+            rows.append(out)
+    return rows
+
 
 # ─── report builder ──────────────────────────────────────────────────────────
 
