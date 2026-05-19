@@ -11,8 +11,6 @@ st.set_page_config(
     layout="wide",
 )
 
-# ─── page style ──────────────────────────────────────────────────────────────
-
 st.markdown("""
 <style>
     .block-container { padding-top: 2rem; }
@@ -77,38 +75,23 @@ with tab1:
             st.error("Please upload at least one inventory export CSV.")
         else:
             with st.spinner("Loading data and building report..."):
-
-                # Load inventory
                 inventory = core.load_inventory_from_files(inv_files)
+                products  = core.load_products_from_files(prod_files) if prod_files else {}
 
-                # Load products (optional)
-                products = core.load_products_from_files(prod_files) if prod_files else {}
-
-                # Build supplier map
                 supplier_map = {}
-                sup_sources = [
-                    (joval_file, "joval"),
-                    (bib_file,   "bibendum"),
-                    (dws_file,   "dws"),
-                    (sss_file,   "sss"),
-                ]
-                for f, label in sup_sources:
+                for f, label in [(joval_file, "joval"), (bib_file, "bibendum"),
+                                  (dws_file, "dws"), (sss_file, "sss")]:
                     if f:
                         handles = core.load_supplier_handles_from_csv(f)
                         for h in handles:
-                            if h in supplier_map:
-                                supplier_map[h] += f", {label}"
-                            else:
-                                supplier_map[h] = label
+                            supplier_map[h] = (supplier_map[h] + f", {label}"
+                                               if h in supplier_map else label)
 
-                # Generate
                 wb, stats = core.build_report(products, inventory, supplier_map)
-
                 buf = io.BytesIO()
                 wb.save(buf)
                 buf.seek(0)
 
-            # Metrics
             c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Total Variants",  f"{stats['total']:,}")
             c2.metric("Stocked",         f"{stats['stocked']:,}")
@@ -133,14 +116,28 @@ with tab1:
 with tab2:
     st.subheader("Inventory Import CSV")
     st.markdown(
-        "Upload supplier files with stock quantities and your inventory export. "
-        "Downloads a Shopify-ready CSV you can import via **Shopify Admin → Inventory → Import**."
+        "Upload supplier files with stock quantities and your Shopify exports. "
+        "Downloads a Shopify-ready CSV you can import via **Admin → Inventory → Import**."
     )
+
+    with st.expander("ℹ️  Joval quantity rules", expanded=False):
+        st.markdown("""
+        **Quantity** = `floor(Qty in stock × carton size)`
+
+        **Zero thresholds by price tier:**
+        | Price | Min units to list |
+        |-------|------------------|
+        | Under $50 | 30 |
+        | $50 – $200 | 10 |
+        | Over $200 | 5 |
+
+        Any `supplier-joval` SKU **missing** from the SOH file is set to **0**.
+        """)
 
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("**Shopify Export**")
+        st.markdown("**Shopify Exports**")
         inv_import_files = st.file_uploader(
             "Inventory export(s)",
             type="csv",
@@ -148,20 +145,27 @@ with tab2:
             key="inv_import",
             help="Shopify Admin → Inventory → Export",
         )
+        prod_import_files = st.file_uploader(
+            "Products export(s) — required for Joval price rules",
+            type="csv",
+            accept_multiple_files=True,
+            key="prod_import",
+            help="Shopify Admin → Products → Export (can be 2 files)",
+        )
 
     with col2:
         st.markdown("**Supplier Quantity Files**")
         joval_xlsx = st.file_uploader(
-            "Joval XLSX (Qty. In Stock col G)",
+            "Joval XLSX (SOH file)",
             type=["xlsx"],
             key="joval_qty",
+            help="Headers row 8 — Item No. (col A), Carton Size (col D), Qty In Stock (col G)",
         )
         other_qty_files = st.file_uploader(
             "Other supplier qty CSVs (SKU + Quantity columns)",
             type="csv",
             accept_multiple_files=True,
             key="other_qty",
-            help="e.g. bibendum_qty.csv, dws_qty.csv, sss_qty.csv",
         )
 
     st.divider()
@@ -170,12 +174,22 @@ with tab2:
         if not inv_import_files:
             st.error("Please upload at least one inventory export CSV.")
         else:
-            all_qty = {}
+            all_qty    = {}
+            sku_prices = {}
+            joval_skus = set()
+
+            # Load prices + joval SKU set from product exports (needed for rules)
+            if prod_import_files:
+                sku_prices = core.load_sku_prices(prod_import_files)
+                joval_skus = core.load_supplier_skus(prod_import_files, tag="supplier-joval")
+                st.info(f"Products: {len(sku_prices):,} SKU prices loaded, "
+                        f"{len(joval_skus):,} supplier-joval SKUs found")
 
             if joval_xlsx:
-                qty = core.load_joval_quantities_xlsx(joval_xlsx)
+                qty = core.load_joval_quantities_xlsx(joval_xlsx, sku_prices=sku_prices)
                 all_qty.update(qty)
-                st.info(f"Joval: {len(qty):,} SKUs loaded")
+                zeroed = sum(1 for v in qty.values() if v == 0)
+                st.info(f"Joval: {len(qty):,} SKUs loaded — {zeroed:,} zeroed by rules")
 
             for f in (other_qty_files or []):
                 qty, err = core.load_qty_csv(f)
@@ -185,16 +199,18 @@ with tab2:
                     all_qty.update(qty)
                     st.info(f"{f.name}: {len(qty):,} SKUs loaded")
 
-            if not all_qty:
-                st.error("No quantities found. Upload joval.xlsx or a qty CSV with SKU + Quantity columns.")
+            if not all_qty and not joval_skus:
+                st.error("No quantities found. Upload Joval XLSX or a qty CSV.")
             else:
                 with st.spinner("Building import CSV..."):
-                    inv_rows = core.load_flat_inventory_rows(inv_import_files)
-                    csv_bytes, stats, unmatched = core.build_inventory_import(inv_rows, all_qty)
+                    inv_rows   = core.load_flat_inventory_rows(inv_import_files)
+                    csv_bytes, stats, unmatched = core.build_inventory_import(
+                        inv_rows, all_qty, joval_skus=joval_skus
+                    )
 
                 c1, c2, c3 = st.columns(3)
-                c1.metric("Variants Updated",      f"{stats['matched']:,}")
-                c2.metric("Skipped (no match)",    f"{stats['skipped']:,}")
+                c1.metric("Variants Updated",        f"{stats['matched']:,}")
+                c2.metric("Skipped (no match)",      f"{stats['skipped']:,}")
                 c3.metric("Supplier SKUs not found", f"{stats['not_found']:,}")
 
                 dated = datetime.now().strftime("%Y-%m-%d_%H%M")

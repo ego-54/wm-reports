@@ -1,10 +1,11 @@
 """
-Shared logic for report generation and inventory import CSV building.
+Shared logic for WineMore Reports — inventory reporting and import CSV generation.
 Works with in-memory file objects (Streamlit uploads) instead of file paths.
 """
 
 import csv
 import io
+import math
 from collections import defaultdict
 from datetime import datetime
 
@@ -31,50 +32,118 @@ def to_float(val):
         return 0.0
 
 
+# ─── Joval rules ─────────────────────────────────────────────────────────────
+#
+# 1. Quantity = floor(Qty_in_stock × carton_size)
+# 2. Price < $50   → zero if qty < 30
+#    Price $50–200 → zero if qty < 10
+#    Price > $200  → zero if qty < 5
+# 3. Any supplier-joval SKU absent from the SOH file → zero
+
+def _parse_carton_size(raw):
+    """Parse "6/ctn" or "12/ctn" → int. Returns 1 if unparseable."""
+    try:
+        return int(str(raw).strip().split("/")[0])
+    except Exception:
+        return 1
+
+def apply_joval_threshold(qty, price):
+    """Return final qty after applying price-tier zero thresholds."""
+    if price < 50 and qty < 30:
+        return 0
+    if 50 <= price <= 200 and qty < 10:
+        return 0
+    if price > 200 and qty < 5:
+        return 0
+    return qty
+
+
 # ─── loaders ────────────────────────────────────────────────────────────────
 
+def _read_file(f):
+    """Read an uploaded file, seeking to 0 first. Returns decoded text."""
+    if hasattr(f, "seek"):
+        f.seek(0)
+    raw = f.read()
+    return raw.decode("utf-8") if isinstance(raw, bytes) else raw
+
 def load_products_from_files(files):
-    """files: list of uploaded file objects (products_export*.csv)"""
+    """Return {handle: {title, price, tags, skus}} from products_export CSVs.
+    Accepts 1 or 2 files — Shopify splits large exports across multiple CSVs."""
     products = {}
     for f in files:
-        text = f.read().decode("utf-8")
-        reader = csv.DictReader(io.StringIO(text))
-        for row in reader:
+        text = _read_file(f)
+        current_handle = current_title = ""
+        for row in csv.DictReader(io.StringIO(text)):
             h = row.get("Handle", "").strip()
-            if not h or h in products:
+            if row.get("Title", "").strip():
+                current_handle = h
+                current_title = row["Title"].strip()
+            if not current_handle:
                 continue
-            products[h] = {
-                "title": row.get("Title", "").strip(),
-                "price": row.get("Variant Price", "").strip(),
-                "tags":  row.get("Tags", "").strip(),
-            }
+            if current_handle not in products:
+                products[current_handle] = {
+                    "title": current_title,
+                    "price": row.get("Variant Price", "").strip(),
+                    "tags":  row.get("Tags", "").strip(),
+                    "skus":  [],
+                }
+            sku = row.get("Variant SKU", "").strip()
+            if sku and sku not in products[current_handle]["skus"]:
+                products[current_handle]["skus"].append(sku)
     return products
 
+def load_sku_prices(files):
+    """Return {sku: float_price} from products_export CSVs (1 or 2 files)."""
+    prices = {}
+    for f in files:
+        for row in csv.DictReader(io.StringIO(_read_file(f))):
+            sku = row.get("Variant SKU", "").strip()
+            if sku and sku not in prices:
+                prices[sku] = to_float(row.get("Variant Price", ""))
+    return prices
+
+def load_supplier_skus(files, tag="supplier-joval"):
+    """Return set of SKUs whose product has the given supplier tag (1 or 2 files)."""
+    tagged = set()
+    for f in files:
+        current_skus = []
+        current_tagged = False
+        for row in csv.DictReader(io.StringIO(_read_file(f))):
+            if row.get("Title", "").strip():
+                current_skus = []
+                current_tagged = tag in row.get("Tags", "")
+            sku = row.get("Variant SKU", "").strip()
+            if sku:
+                current_skus.append(sku)
+            if current_tagged:
+                tagged.update(current_skus)
+    return tagged
+
 def load_inventory_from_files(files):
-    """files: list of uploaded file objects (inventory_export*.csv)"""
+    """Return {handle: {wmc, chad, skus, title, _rows}} from inventory_export CSVs."""
     inv = {}
     for f in files:
         text = f.read().decode("utf-8")
-        reader = csv.DictReader(io.StringIO(text))
-        for row in reader:
+        for row in csv.DictReader(io.StringIO(text)):
             h   = row.get("Handle", "").strip()
             sku = row.get("SKU", "").strip()
             if not h:
                 continue
-            wmc   = to_int(row.get("Wine More Cellars", ""))
-            chad  = to_int(row.get("WM Chadstone", ""))
+            wmc  = to_int(row.get("Wine More Cellars", ""))
+            chad = to_int(row.get("WM Chadstone", ""))
             title = row.get("Title", "").strip()
             if h not in inv:
                 inv[h] = {"wmc": 0, "chad": 0, "skus": [], "title": title, "_rows": []}
-            inv[h]["wmc"]   += wmc
-            inv[h]["chad"]  += chad
+            inv[h]["wmc"]  += wmc
+            inv[h]["chad"] += chad
             if sku:
                 inv[h]["skus"].append(sku)
             inv[h]["_rows"].append(row)
     return inv
 
 def load_supplier_handles_from_csv(file):
-    """Returns set of handles from a supplier tagged-products CSV."""
+    """Return set of handles from a supplier tagged-products CSV."""
     text = file.read().decode("utf-8")
     handles = set()
     for row in csv.DictReader(io.StringIO(text)):
@@ -83,19 +152,36 @@ def load_supplier_handles_from_csv(file):
             handles.add(h)
     return handles
 
-def load_joval_quantities_xlsx(file):
-    """Read joval.xlsx: headers row 8, SKU col A, Qty. In Stock col G."""
+def load_joval_quantities_xlsx(file, sku_prices=None):
+    """
+    Read Joval SOH xlsx — headers row 8, data from row 9:
+      col A = Item No. (SKU)
+      col D = Carton Size ("6/ctn")
+      col G = Qty. In Stock (decimal cartons)
+
+    Returns {sku: final_qty} after applying floor(qty × carton) and
+    price-tier zero thresholds (if sku_prices provided).
+    """
     wb = openpyxl.load_workbook(file, data_only=True)
     ws = wb.active
     qty = {}
     for r in range(9, ws.max_row + 1):
-        sku = ws.cell(r, 1).value
-        q   = ws.cell(r, 7).value
-        if sku and q is not None:
-            try:
-                qty[str(sku).strip()] = max(0, int(q))
-            except (ValueError, TypeError):
-                pass
+        sku     = ws.cell(r, 1).value
+        carton  = ws.cell(r, 4).value
+        q       = ws.cell(r, 7).value
+        if not sku:
+            continue
+        sku = str(sku).strip()
+        carton_size = _parse_carton_size(carton)
+        try:
+            raw_qty = float(q) if q is not None else 0.0
+        except (ValueError, TypeError):
+            raw_qty = 0.0
+        calculated = math.floor(raw_qty * carton_size)
+        if sku_prices:
+            price = sku_prices.get(sku, 0.0)
+            calculated = apply_joval_threshold(calculated, price)
+        qty[sku] = max(0, calculated)
     return qty
 
 def load_qty_csv(file):
@@ -121,6 +207,16 @@ def load_qty_csv(file):
                 pass
     return qty, None
 
+def load_flat_inventory_rows(files):
+    """Return flat list of all raw CSV rows from inventory exports."""
+    rows = []
+    for f in files:
+        text = f.read().decode("utf-8")
+        for row in csv.DictReader(io.StringIO(text)):
+            if row.get("SKU", "").strip():
+                rows.append(row)
+    return rows
+
 
 # ─── report builder ──────────────────────────────────────────────────────────
 
@@ -132,7 +228,7 @@ SUPPLIER_COLORS = {
 }
 
 def build_report(products, inventory, supplier_map):
-    """Returns an openpyxl Workbook with Inventory + Summary sheets."""
+    """Return (openpyxl.Workbook, stats_dict) with Inventory + Summary sheets."""
     all_handles = set(products) | set(inventory)
     rows = []
     for h in all_handles:
@@ -216,7 +312,6 @@ def build_report(products, inventory, supplier_map):
     for i, w in enumerate(col_widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
-    # Summary sheet
     ws2 = wb.create_sheet("Summary")
     stocked    = [r for r in rows if not r["zero"]]
     zeroed     = [r for r in rows if r["zero"]]
@@ -254,10 +349,10 @@ def build_report(products, inventory, supplier_map):
         ws2.column_dimensions[col].width = 18
 
     stats = {
-        "total": len(rows),
-        "stocked": len(stocked),
-        "zero": len(zeroed),
-        "wmc_units": total_wmc,
+        "total":      len(rows),
+        "stocked":    len(stocked),
+        "zero":       len(zeroed),
+        "wmc_units":  total_wmc,
         "chad_units": total_chad,
     }
     return wb, stats
@@ -273,12 +368,22 @@ SHOPIFY_COLS = [
     "Committed (not editable)", "Available (not editable)", "On hand (new)",
 ]
 
-def build_inventory_import(inv_rows_raw, supplier_qty, location="Wine More Cellars"):
+def build_inventory_import(inv_rows_raw, supplier_qty,
+                           joval_skus=None, location="Wine More Cellars"):
     """
-    inv_rows_raw: flat list of raw CSV row dicts from inventory export
-    supplier_qty: {sku: quantity}
-    Returns (csv_bytes, stats_dict, unmatched_skus)
+    Build Shopify inventory import CSV.
+
+    inv_rows_raw  : flat list of raw dicts from inventory export
+    supplier_qty  : {sku: int_qty} — already has Joval rules applied
+    joval_skus    : set of all supplier-joval SKUs in Shopify — any absent
+                    from supplier_qty get forced to 0 (rule 3)
     """
+    # Apply missing-SKU rule: joval SKUs not in SOH → force 0
+    if joval_skus:
+        missing = joval_skus - set(supplier_qty.keys())
+        for sku in missing:
+            supplier_qty[sku] = 0
+
     matched   = []
     skipped   = 0
     not_found = set(supplier_qty.keys())
@@ -315,19 +420,8 @@ def build_inventory_import(inv_rows_raw, supplier_qty, location="Wine More Cella
     writer.writerows(matched)
 
     stats = {
-        "matched": len(matched),
-        "skipped": skipped,
+        "matched":   len(matched),
+        "skipped":   skipped,
         "not_found": len(not_found),
     }
     return buf.getvalue().encode("utf-8"), stats, sorted(not_found)
-
-
-def load_flat_inventory_rows(files):
-    """Returns flat list of all raw CSV rows (not aggregated by handle)."""
-    rows = []
-    for f in files:
-        text = f.read().decode("utf-8")
-        for row in csv.DictReader(io.StringIO(text)):
-            if row.get("SKU", "").strip():
-                rows.append(row)
-    return rows
