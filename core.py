@@ -132,8 +132,8 @@ def load_sku_prices(files):
 def load_sku_titles(files):
     """Return {sku: product_title} from products_export CSV/XLSX (1 or 2 files)."""
     titles = {}
-    current_title = ""
     for f in files:
+        current_title = ""
         for row in _iter_rows(f):
             if row.get("Title", "").strip():
                 current_title = row["Title"].strip()
