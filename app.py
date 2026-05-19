@@ -176,11 +176,14 @@ with tab2:
             st.info(f"Products: {len(sku_prices):,} SKU prices loaded, "
                     f"{len(joval_skus):,} supplier-joval SKUs found")
 
+            joval_stats = None
             if joval_xlsx:
-                qty = core.load_joval_quantities_xlsx(joval_xlsx, sku_prices=sku_prices)
+                qty, joval_stats = core.load_joval_quantities_xlsx(joval_xlsx, sku_prices=sku_prices)
                 all_qty.update(qty)
-                zeroed = sum(1 for v in qty.values() if v == 0)
-                st.info(f"Joval: {len(qty):,} SKUs loaded — {zeroed:,} zeroed by rules")
+                st.info(f"Joval SOH: {joval_stats['total']:,} SKUs — "
+                        f"{joval_stats['nonzero']:,} with stock, "
+                        f"{len(joval_stats['zeroed_by_rules']):,} zeroed by price rules, "
+                        f"{len(joval_stats['zeroed_raw']):,} zero raw stock")
 
             for f in (other_qty_files or []):
                 qty, err = core.load_qty_csv(f)
@@ -199,22 +202,67 @@ with tab2:
                         inv_rows, all_qty, joval_skus=joval_skus
                     )
 
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Variants Updated",        f"{stats['matched']:,}")
-                c2.metric("Skipped (no match)",      f"{stats['skipped']:,}")
-                c3.metric("Supplier SKUs not found", f"{stats['not_found']:,}")
+                st.success("Import CSV ready!")
+
+                # ── Overview metrics ──────────────────────────────────────────
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("Total in CSV",          f"{stats['matched']:,}")
+                c2.metric("With Stock",             f"{stats['nonzero']:,}")
+                c3.metric("Set to Zero",            f"{stats['zeroed']:,}")
+                c4.metric("Not in Products Export", f"{stats['not_found']:,}")
+                c5.metric("Supplier SKUs Missing",  f"{len(stats['zeroed_missing_skus']):,}")
 
                 dated = datetime.now().strftime("%Y-%m-%d")
-                st.success("Import CSV ready!")
                 st.download_button(
-                    label="⬇️  Download Shopify Import CSV",
+                    label="⬇️  Download inventory_joval CSV",
                     data=csv_bytes,
                     file_name=f"inventory_joval_{dated}.csv",
                     mime="text/csv",
                 )
 
+                st.divider()
+
+                # ── Price tier breakdown ──────────────────────────────────────
+                if joval_stats and joval_stats["zeroed_by_rules"]:
+                    rules = joval_stats["zeroed_by_rules"]
+                    tier_summary = {}
+                    thresholds = {"Under $50": 30, "$50–$200": 10, "Over $200": 5}
+                    for row in rules:
+                        t = row["Tier"]
+                        tier_summary[t] = tier_summary.get(t, 0) + 1
+                    tier_rows = [
+                        {"Price Tier": t, "Min Units Required": thresholds.get(t, "—"),
+                         "SKUs Zeroed": tier_summary.get(t, 0)}
+                        for t in ["Under $50", "$50–$200", "Over $200"] if t in tier_summary
+                    ]
+                    with st.expander(f"📊  Price rule zeroes — {len(rules):,} SKUs", expanded=True):
+                        st.dataframe(tier_rows, hide_index=True, use_container_width=True)
+                        st.caption("Full list:")
+                        st.dataframe(rules, hide_index=True, use_container_width=True)
+
+                # ── Zeroed because missing from SOH ───────────────────────────
+                if stats["zeroed_missing_skus"]:
+                    miss = stats["zeroed_missing_skus"]
+                    with st.expander(f"⚠️  Zeroed — missing from SOH — {len(miss):,} SKUs"):
+                        st.dataframe([{"SKU": s} for s in miss],
+                                     hide_index=True, use_container_width=True)
+
+                # ── Zero raw stock in SOH ─────────────────────────────────────
+                if joval_stats and joval_stats["zeroed_raw"]:
+                    raw = joval_stats["zeroed_raw"]
+                    with st.expander(f"ℹ️  Zero stock in SOH — {len(raw):,} SKUs"):
+                        st.dataframe([{"SKU": s} for s in raw],
+                                     hide_index=True, use_container_width=True)
+
+                # ── Preview table ─────────────────────────────────────────────
+                if stats.get("preview"):
+                    with st.expander("👁️  Preview — first 30 rows", expanded=False):
+                        st.dataframe(stats["preview"], hide_index=True, use_container_width=True)
+
+                # ── Supplier SKUs not matched in product export ───────────────
                 if unmatched:
-                    with st.expander(f"⚠️  {len(unmatched):,} supplier SKUs not found in Shopify"):
-                        st.code("\n".join(unmatched[:100]))
-                        if len(unmatched) > 100:
-                            st.caption(f"Showing first 100 of {len(unmatched)}")
+                    with st.expander(f"🔍  {len(unmatched):,} supplier SKUs not found in product export"):
+                        st.dataframe([{"SKU": s} for s in unmatched[:200]],
+                                     hide_index=True, use_container_width=True)
+                        if len(unmatched) > 200:
+                            st.caption(f"Showing first 200 of {len(unmatched)}")

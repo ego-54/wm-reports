@@ -183,9 +183,8 @@ def load_joval_quantities_xlsx(file, sku_prices=None):
       col D = Carton Size ("6/ctn")
       col G = Qty. In Stock (decimal cartons)
 
-    Returns {sku: final_qty} after applying floor(qty × carton) and
-    price-tier zero thresholds (if sku_prices provided).
-    Accepts a file path, Streamlit UploadedFile, or any file-like object.
+    Returns (qty_dict, joval_stats) where joval_stats contains breakdown of
+    zeroed SKUs by reason (rules vs raw zero stock).
     """
     if hasattr(file, "seek"):
         file.seek(0)
@@ -193,10 +192,13 @@ def load_joval_quantities_xlsx(file, sku_prices=None):
     wb = openpyxl.load_workbook(buf, data_only=True)
     ws = wb.active
     qty = {}
+    zeroed_by_rules = []  # {"sku", "calculated", "price", "tier"}
+    zeroed_raw      = []  # SKUs with 0 stock in SOH
+
     for r in range(9, ws.max_row + 1):
-        sku     = ws.cell(r, 1).value
-        carton  = ws.cell(r, 4).value
-        q       = ws.cell(r, 7).value
+        sku    = ws.cell(r, 1).value
+        carton = ws.cell(r, 4).value
+        q      = ws.cell(r, 7).value
         if not sku:
             continue
         sku = str(sku).strip()
@@ -206,11 +208,30 @@ def load_joval_quantities_xlsx(file, sku_prices=None):
         except (ValueError, TypeError):
             raw_qty = 0.0
         calculated = math.floor(raw_qty * carton_size)
-        if sku_prices:
+
+        if calculated == 0:
+            zeroed_raw.append(sku)
+
+        if sku_prices and calculated > 0:
             price = sku_prices.get(sku, 0.0)
-            calculated = apply_joval_threshold(calculated, price)
+            final = apply_joval_threshold(calculated, price)
+            if final == 0:
+                tier = "Under $50" if price < 50 else ("$50–$200" if price <= 200 else "Over $200")
+                zeroed_by_rules.append({
+                    "SKU": sku, "Calculated Qty": calculated,
+                    "Price": f"${price:.2f}", "Tier": tier,
+                })
+            calculated = final
+
         qty[sku] = max(0, calculated)
-    return qty
+
+    joval_stats = {
+        "total":           len(qty),
+        "nonzero":         sum(1 for v in qty.values() if v > 0),
+        "zeroed_by_rules": zeroed_by_rules,
+        "zeroed_raw":      zeroed_raw,
+    }
+    return qty, joval_stats
 
 def load_qty_csv(file):
     """Generic CSV or XLSX with SKU and Quantity columns."""
@@ -435,14 +456,15 @@ def build_inventory_import(inv_rows_raw, supplier_qty,
     """
     Build Shopify inventory import CSV.
 
-    inv_rows_raw  : flat list of raw dicts from inventory export
+    inv_rows_raw  : flat list of raw dicts from product/inventory export
     supplier_qty  : {sku: int_qty} — already has Joval rules applied
     joval_skus    : set of all supplier-joval SKUs in Shopify — any absent
                     from supplier_qty get forced to 0 (rule 3)
     """
-    # Apply missing-SKU rule: joval SKUs not in SOH → force 0
+    zeroed_missing_skus = []
     if joval_skus:
         missing = joval_skus - set(supplier_qty.keys())
+        zeroed_missing_skus = sorted(missing)
         for sku in missing:
             supplier_qty[sku] = 0
 
@@ -456,6 +478,7 @@ def build_inventory_import(inv_rows_raw, supplier_qty,
             skipped += 1
             continue
         not_found.discard(sku)
+        qty_val = supplier_qty[sku]
         out = {col: "" for col in SHOPIFY_COLS}
         out.update({
             "Handle":                     row.get("Handle", ""),
@@ -472,9 +495,18 @@ def build_inventory_import(inv_rows_raw, supplier_qty,
             "Unavailable (not editable)": "0",
             "Committed (not editable)":   "0",
             "Available (not editable)":   "0",
-            "On hand (new)":              str(supplier_qty[sku]),
+            "On hand (new)":              str(qty_val),
         })
         matched.append(out)
+
+    zeroed  = sum(1 for r in matched if r["On hand (new)"] == "0")
+    nonzero = len(matched) - zeroed
+
+    preview = [
+        {"SKU": r["SKU"], "Handle": r["Handle"],
+         "Option": r["Option1 Value"], "On hand (new)": int(r["On hand (new)"])}
+        for r in matched[:30]
+    ]
 
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=SHOPIFY_COLS)
@@ -482,8 +514,12 @@ def build_inventory_import(inv_rows_raw, supplier_qty,
     writer.writerows(matched)
 
     stats = {
-        "matched":   len(matched),
-        "skipped":   skipped,
-        "not_found": len(not_found),
+        "matched":             len(matched),
+        "nonzero":             nonzero,
+        "zeroed":              zeroed,
+        "skipped":             skipped,
+        "not_found":           len(not_found),
+        "zeroed_missing_skus": zeroed_missing_skus,
+        "preview":             preview,
     }
     return buf.getvalue().encode("utf-8"), stats, sorted(not_found)
