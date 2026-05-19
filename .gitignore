@@ -3,6 +3,7 @@ __pycache__/
 .DS_Store
 *.xlsx
 *.csv
+!inventory/*.csv
 *.log
 .env
 config.json
