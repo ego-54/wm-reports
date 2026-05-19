@@ -515,8 +515,14 @@ def build_inventory_import(inv_rows_raw, supplier_qty,
         })
         matched.append(out)
 
-    zeroed  = sum(1 for r in matched if r["On hand (new)"] == "0")
+    zeroed_rows = [r for r in matched if r["On hand (new)"] == "0"]
+    zeroed  = len(zeroed_rows)
     nonzero = len(matched) - zeroed
+
+    zeroed_detail = [
+        {"SKU": r["SKU"], "Product": r.get("Title", ""), "Option": r["Option1 Value"]}
+        for r in zeroed_rows
+    ]
 
     preview = [
         {"SKU": r["SKU"], "Product": r.get("Title", ""),
@@ -536,6 +542,7 @@ def build_inventory_import(inv_rows_raw, supplier_qty,
         "skipped":             skipped,
         "not_found":           len(not_found),
         "zeroed_missing_skus": zeroed_missing_skus,
+        "zeroed_detail":       zeroed_detail,
         "preview":             preview,
     }
     return buf.getvalue().encode("utf-8"), stats, sorted(not_found)

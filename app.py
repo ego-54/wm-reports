@@ -223,6 +223,12 @@ with tab2:
                     mime="text/csv",
                 )
 
+                # ── All zeroed rows in the import CSV ────────────────────────
+                if stats.get("zeroed_detail"):
+                    zd = stats["zeroed_detail"]
+                    with st.expander(f"🔴  Set to 0 in import CSV — {len(zd):,} variants", expanded=False):
+                        st.dataframe(zd, hide_index=True, use_container_width=True)
+
                 st.divider()
 
                 # ── Price tier breakdown ──────────────────────────────────────
