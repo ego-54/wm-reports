@@ -44,14 +44,14 @@ with tab1:
         st.markdown("**Shopify Exports**")
         inv_files = st.file_uploader(
             "Inventory export(s)",
-            type="csv",
+            type=["csv", "xlsx"],
             accept_multiple_files=True,
             key="inv_report",
             help="Shopify Admin → Inventory → Export",
         )
         prod_files = st.file_uploader(
             "Products export(s) — optional, adds Price",
-            type="csv",
+            type=["csv", "xlsx"],
             accept_multiple_files=True,
             key="prod_report",
             help="Shopify Admin → Products → Export (can be 2 files)",
@@ -64,9 +64,9 @@ with tab1:
             type=["csv", "xlsx"],
             key="joval_report",
         )
-        bib_file = st.file_uploader("Bibendum CSV", type="csv", key="bib_report")
-        dws_file = st.file_uploader("DWS CSV",      type="csv", key="dws_report")
-        sss_file = st.file_uploader("SSS CSV",      type="csv", key="sss_report")
+        bib_file = st.file_uploader("Bibendum CSV", type=["csv", "xlsx"], key="bib_report")
+        dws_file = st.file_uploader("DWS CSV",      type=["csv", "xlsx"], key="dws_report")
+        sss_file = st.file_uploader("SSS CSV",      type=["csv", "xlsx"], key="sss_report")
 
     st.divider()
 
@@ -140,14 +140,14 @@ with tab2:
         st.markdown("**Shopify Exports**")
         inv_import_files = st.file_uploader(
             "Inventory export(s)",
-            type="csv",
+            type=["csv", "xlsx"],
             accept_multiple_files=True,
             key="inv_import",
             help="Shopify Admin → Inventory → Export",
         )
         prod_import_files = st.file_uploader(
             "Products export(s) — required for Joval price rules",
-            type="csv",
+            type=["csv", "xlsx"],
             accept_multiple_files=True,
             key="prod_import",
             help="Shopify Admin → Products → Export (can be 2 files)",
@@ -157,13 +157,13 @@ with tab2:
         st.markdown("**Supplier Quantity Files**")
         joval_xlsx = st.file_uploader(
             "Joval XLSX (SOH file)",
-            type=["xlsx"],
+            type=["csv", "xlsx"],
             key="joval_qty",
             help="Headers row 8 — Item No. (col A), Carton Size (col D), Qty In Stock (col G)",
         )
         other_qty_files = st.file_uploader(
             "Other supplier qty CSVs (SKU + Quantity columns)",
-            type="csv",
+            type=["csv", "xlsx"],
             accept_multiple_files=True,
             key="other_qty",
         )

@@ -67,14 +67,40 @@ def _read_file(f):
     raw = f.read()
     return raw.decode("utf-8") if isinstance(raw, bytes) else raw
 
+def _is_xlsx(f):
+    name = getattr(f, "name", "") or ""
+    return name.lower().endswith(".xlsx")
+
+def _iter_rows(f):
+    """
+    Yield row dicts from a CSV or XLSX file.
+    For XLSX: row 1 is the header, remaining rows become dicts.
+    Handles Streamlit UploadedFile objects and regular file-like objects.
+    """
+    if _is_xlsx(f):
+        if hasattr(f, "seek"):
+            f.seek(0)
+        buf = io.BytesIO(f.read())
+        wb  = openpyxl.load_workbook(buf, data_only=True)
+        ws  = wb.active
+        headers = [str(ws.cell(1, c).value or "").strip()
+                   for c in range(1, ws.max_column + 1)]
+        for r in range(2, ws.max_row + 1):
+            row = {headers[c]: str(ws.cell(r, c + 1).value or "").strip()
+                   for c in range(len(headers))}
+            # skip entirely blank rows
+            if any(v for v in row.values()):
+                yield row
+    else:
+        yield from csv.DictReader(io.StringIO(_read_file(f)))
+
 def load_products_from_files(files):
-    """Return {handle: {title, price, tags, skus}} from products_export CSVs.
-    Accepts 1 or 2 files — Shopify splits large exports across multiple CSVs."""
+    """Return {handle: {title, price, tags, skus}} from products_export CSV/XLSX.
+    Accepts 1 or 2 files — Shopify splits large exports across multiple files."""
     products = {}
     for f in files:
-        text = _read_file(f)
         current_handle = current_title = ""
-        for row in csv.DictReader(io.StringIO(text)):
+        for row in _iter_rows(f):
             h = row.get("Handle", "").strip()
             if row.get("Title", "").strip():
                 current_handle = h
@@ -94,10 +120,10 @@ def load_products_from_files(files):
     return products
 
 def load_sku_prices(files):
-    """Return {sku: float_price} from products_export CSVs (1 or 2 files)."""
+    """Return {sku: float_price} from products_export CSV/XLSX (1 or 2 files)."""
     prices = {}
     for f in files:
-        for row in csv.DictReader(io.StringIO(_read_file(f))):
+        for row in _iter_rows(f):
             sku = row.get("Variant SKU", "").strip()
             if sku and sku not in prices:
                 prices[sku] = to_float(row.get("Variant Price", ""))
@@ -109,7 +135,7 @@ def load_supplier_skus(files, tag="supplier-joval"):
     for f in files:
         current_skus = []
         current_tagged = False
-        for row in csv.DictReader(io.StringIO(_read_file(f))):
+        for row in _iter_rows(f):
             if row.get("Title", "").strip():
                 current_skus = []
                 current_tagged = tag in row.get("Tags", "")
@@ -121,17 +147,16 @@ def load_supplier_skus(files, tag="supplier-joval"):
     return tagged
 
 def load_inventory_from_files(files):
-    """Return {handle: {wmc, chad, skus, title, _rows}} from inventory_export CSVs."""
+    """Return {handle: {wmc, chad, skus, title, _rows}} from inventory_export CSV/XLSX."""
     inv = {}
     for f in files:
-        text = f.read().decode("utf-8")
-        for row in csv.DictReader(io.StringIO(text)):
+        for row in _iter_rows(f):
             h   = row.get("Handle", "").strip()
             sku = row.get("SKU", "").strip()
             if not h:
                 continue
-            wmc  = to_int(row.get("Wine More Cellars", ""))
-            chad = to_int(row.get("WM Chadstone", ""))
+            wmc   = to_int(row.get("Wine More Cellars", ""))
+            chad  = to_int(row.get("WM Chadstone", ""))
             title = row.get("Title", "").strip()
             if h not in inv:
                 inv[h] = {"wmc": 0, "chad": 0, "skus": [], "title": title, "_rows": []}
@@ -143,25 +168,10 @@ def load_inventory_from_files(files):
     return inv
 
 def load_supplier_handles_from_csv(file):
-    """Return set of handles from a supplier tagged-products CSV or Joval XLSX."""
-    name = getattr(file, "name", "")
-    if name.lower().endswith(".xlsx"):
-        # Joval XLSX — SKUs in col A from row 9; use SKU as identifier
-        if hasattr(file, "seek"):
-            file.seek(0)
-        buf = io.BytesIO(file.read())
-        wb = openpyxl.load_workbook(buf, data_only=True)
-        ws = wb.active
-        handles = set()
-        for r in range(9, ws.max_row + 1):
-            val = ws.cell(r, 1).value
-            if val:
-                handles.add(str(val).strip())
-        return handles
-    text = _read_file(file)
+    """Return set of handles/SKUs from a supplier CSV or XLSX."""
     handles = set()
-    for row in csv.DictReader(io.StringIO(text)):
-        h = row.get("Handle", "").strip()
+    for row in _iter_rows(file):
+        h = row.get("Handle", row.get("Item No.", "")).strip()
         if h:
             handles.add(h)
     return handles
@@ -203,19 +213,20 @@ def load_joval_quantities_xlsx(file, sku_prices=None):
     return qty
 
 def load_qty_csv(file):
-    """Generic CSV with SKU and Quantity columns."""
-    text   = file.read().decode("utf-8")
-    reader = csv.DictReader(io.StringIO(text))
-    fields = [c.strip().lower() for c in (reader.fieldnames or [])]
-    orig   = reader.fieldnames or []
-    sku_col = next((orig[i] for i, c in enumerate(fields)
+    """Generic CSV or XLSX with SKU and Quantity columns."""
+    rows = list(_iter_rows(file))
+    if not rows:
+        return {}, "File is empty"
+    fields_lower = [c.strip().lower() for c in rows[0].keys()]
+    orig = list(rows[0].keys())
+    sku_col = next((orig[i] for i, c in enumerate(fields_lower)
                     if c in ("sku", "item no.", "item no", "item_no")), None)
-    qty_col = next((orig[i] for i, c in enumerate(fields)
+    qty_col = next((orig[i] for i, c in enumerate(fields_lower)
                     if c in ("quantity", "qty", "qty. in stock", "stock", "on hand")), None)
     if not sku_col or not qty_col:
         return {}, f"Cannot find SKU/Quantity columns (found: {orig})"
     qty = {}
-    for row in reader:
+    for row in rows:
         sku = row.get(sku_col, "").strip()
         q   = row.get(qty_col, "").strip()
         if sku and q:
@@ -226,11 +237,10 @@ def load_qty_csv(file):
     return qty, None
 
 def load_flat_inventory_rows(files):
-    """Return flat list of all raw CSV rows from inventory exports."""
+    """Return flat list of all raw row dicts from inventory exports (CSV or XLSX)."""
     rows = []
     for f in files:
-        text = f.read().decode("utf-8")
-        for row in csv.DictReader(io.StringIO(text)):
+        for row in _iter_rows(f):
             if row.get("SKU", "").strip():
                 rows.append(row)
     return rows
