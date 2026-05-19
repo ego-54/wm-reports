@@ -143,8 +143,22 @@ def load_inventory_from_files(files):
     return inv
 
 def load_supplier_handles_from_csv(file):
-    """Return set of handles from a supplier tagged-products CSV."""
-    text = file.read().decode("utf-8")
+    """Return set of handles from a supplier tagged-products CSV or Joval XLSX."""
+    name = getattr(file, "name", "")
+    if name.lower().endswith(".xlsx"):
+        # Joval XLSX — SKUs in col A from row 9; use SKU as identifier
+        if hasattr(file, "seek"):
+            file.seek(0)
+        buf = io.BytesIO(file.read())
+        wb = openpyxl.load_workbook(buf, data_only=True)
+        ws = wb.active
+        handles = set()
+        for r in range(9, ws.max_row + 1):
+            val = ws.cell(r, 1).value
+            if val:
+                handles.add(str(val).strip())
+        return handles
+    text = _read_file(file)
     handles = set()
     for row in csv.DictReader(io.StringIO(text)):
         h = row.get("Handle", "").strip()
@@ -161,8 +175,12 @@ def load_joval_quantities_xlsx(file, sku_prices=None):
 
     Returns {sku: final_qty} after applying floor(qty × carton) and
     price-tier zero thresholds (if sku_prices provided).
+    Accepts a file path, Streamlit UploadedFile, or any file-like object.
     """
-    wb = openpyxl.load_workbook(file, data_only=True)
+    if hasattr(file, "seek"):
+        file.seek(0)
+    buf = io.BytesIO(file.read())
+    wb = openpyxl.load_workbook(buf, data_only=True)
     ws = wb.active
     qty = {}
     for r in range(9, ws.max_row + 1):

@@ -61,7 +61,7 @@ with tab1:
         st.markdown("**Supplier Files**")
         joval_file = st.file_uploader(
             "Joval (CSV with Handle column)",
-            type=["csv"],
+            type=["csv", "xlsx"],
             key="joval_report",
         )
         bib_file = st.file_uploader("Bibendum CSV", type="csv", key="bib_report")
