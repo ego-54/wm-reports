@@ -204,12 +204,12 @@ with tab2:
                 c2.metric("Skipped (no match)",      f"{stats['skipped']:,}")
                 c3.metric("Supplier SKUs not found", f"{stats['not_found']:,}")
 
-                dated = datetime.now().strftime("%Y-%m-%d_%H%M")
+                dated = datetime.now().strftime("%Y-%m-%d")
                 st.success("Import CSV ready!")
                 st.download_button(
                     label="⬇️  Download Shopify Import CSV",
                     data=csv_bytes,
-                    file_name=f"shopify_inventory_import_{dated}.csv",
+                    file_name=f"inventory_joval_{dated}.csv",
                     mime="text/csv",
                 )
 
