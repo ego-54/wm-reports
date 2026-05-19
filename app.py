@@ -127,7 +127,7 @@ with tab2:
         **Zero thresholds by price tier:**
         | Price | Min units to list |
         |-------|------------------|
-        | Under $50 | 30 |
+        | Under $50 | 20 |
         | $50 – $200 | 10 |
         | Over $200 | 5 |
 
@@ -229,7 +229,7 @@ with tab2:
                 if joval_stats and joval_stats["zeroed_by_rules"]:
                     rules = joval_stats["zeroed_by_rules"]
                     tier_summary = {}
-                    thresholds = {"Under $50": 30, "$50–$200": 10, "Over $200": 5}
+                    thresholds = {"Under $50": 20, "$50–$200": 10, "Over $200": 5}
                     for row in rules:
                         t = row["Tier"]
                         tier_summary[t] = tier_summary.get(t, 0) + 1

@@ -49,7 +49,7 @@ def _parse_carton_size(raw):
 
 def apply_joval_threshold(qty, price):
     """Return final qty after applying price-tier zero thresholds."""
-    if price < 50 and qty < 30:
+    if price < 50 and qty < 20:
         return 0
     if 50 <= price <= 200 and qty < 10:
         return 0
